@@ -1,0 +1,114 @@
+---
+title: "Climwin data mutievent cox"
+author: "Ivan Bizberg"
+date: '2022-06-15'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# library ----
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(survival)
+library(magrittr)
+
+path <- "C:/Users/Conducta"
+```
+
+# Import data
+```{r}
+DATA <- read.csv(str_glue("{path}/Dropbox/PHD/DATA/ALLWORK2021.csv"),sep =",",
+                    header = T, na.strings=c("","NA")) %>% 
+  mutate(across(c(ANILLOHEMB, ANILLOMACH), ~toupper(.))) %>% 
+  mutate(across(c(SEMANIPULO, CONFIRMHEMB, CONFIRMMACH), ~tolower(.)))
+```
+# Filtering / Mutating data
+```{r}
+Cox_Matrix <- DATA %>% 
+  arrange(WORKYEAR, as.numeric(str_sub(NIDO,4,11))) %>% # Remove first renested
+  group_by(ANILLOHEMB, WORKYEAR) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  filter(!n > 1) %>% 
+  mutate(COHORTYEAR = WORKYEAR - AGEHEMB) %>% # Select females from cohort 1989-2010
+  filter(COHORTYEAR %in% 1989:2010) %>% 
+  mutate(ESTPUESTA1 = mdy(ESTPUESTA1),
+         StratBreedingSeason = dmy(str_glue("1-sep-{WORKYEAR-1}")),
+         Time0 = week(StratBreedingSeason),
+         n_weeks = ceiling(as.numeric(ESTPUESTA1 - StratBreedingSeason)/7)) 
+```
+
+# Converting data into counting form
+```{r}
+MiniCox_Matrix <- Cox_Matrix %>% select(COHORTYEAR, WORKYEAR, NIDO, SEMANIPULO, ANILLOHEMB, AGEHEMB, StratBreedingSeason, ESTPUESTA1, n_weeks) %>% 
+  drop_na(n_weeks)
+
+CountingCox_Matrix <- as.data.frame(lapply(MiniCox_Matrix, rep, MiniCox_Matrix$n_weeks)) %>% 
+  group_by(ANILLOHEMB, WORKYEAR) %>% 
+  mutate(Stop_time = 1:n(),
+         Start_time = Stop_time-1) %>% 
+  mutate(Event = if_else(lead(Stop_time) > Stop_time, 0, 1)) %>% 
+  ungroup() %>% 
+  mutate(Dates = StratBreedingSeason + weeks(Stop_time)) %>% 
+  mutate(Event = replace_na(Event, 1))
+```
+# Add non-breeeding years
+```{r}
+Add_MissingYears <- MiniCox_Matrix %>% arrange(ANILLOHEMB) %>% 
+  group_by(ANILLOHEMB) %>% 
+  complete(WORKYEAR = full_seq(min(WORKYEAR):max(WORKYEAR), 1))
+
+MissingYears <- Add_MissingYears %>% 
+  group_by(ANILLOHEMB) %>% 
+  fill(COHORTYEAR, SEMANIPULO) %>% 
+  filter(is.na(NIDO)) %>% 
+  mutate(
+    NIDO = paste0(ANILLOHEMB, "_", WORKYEAR),
+    AGEHEMB = WORKYEAR - COHORTYEAR,
+    StratBreedingSeason = dmy(str_glue("1-sep-{WORKYEAR-1}")),
+    ESTPUESTA1 = dmy(str_glue("1-jul-{WORKYEAR}")),
+    n_weeks = ceiling(as.numeric(ESTPUESTA1 - StratBreedingSeason)/7)
+  )
+
+Counting_MissingYears <- as.data.frame(lapply(MissingYears, rep, MissingYears$n_weeks)) %>% 
+  group_by(ANILLOHEMB, WORKYEAR) %>% 
+  mutate(Stop_time = 1:n(),
+         Start_time = Stop_time-1) %>% 
+  mutate(Event = 0) %>% 
+  ungroup() %>% 
+  mutate(Dates = StratBreedingSeason + weeks(Stop_time)) 
+```
+# Merge breeding with non-breeding years
+```{r}
+Laying_CoxData <- rbind(CountingCox_Matrix, Counting_MissingYears)
+```
+
+
+
+# Check data
+
+```{r}
+Laying_CoxData %>% count(ANILLOHEMB, WORKYEAR)
+```
+# Add variables TSLN Attempt Success
+Attempt 	Number of attempt since last attemp
+Success 	If previous nesting attempt was succesful (at least laid one egg) = 1, if not =0
+TSLN	Time since last laying event
+
+```{r}
+Laying_CoxData
+```
+
+
+
+# Save data
+```{r}
+write_csv(Laying_CoxData, "C:/Users/Conducta/Dropbox/PHD/Git/Climwin_LayingDate/CoxDATA_Laying.csv")
+
+```
+
